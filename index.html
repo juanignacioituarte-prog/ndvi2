@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Farm NDVI Map</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>#map { height: 100vh; }</style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script>
+const CONFIG_ID = "3d05a814-e5b4-458f-a661-1be8857216a5";
+
+// Initialize map
+const map = L.map('map').setView([-41.225, 174.825], 14);
+
+// Add Sentinel Hub NDVI WMS tiles
+L.tileLayer.wms(
+  `https://services.sentinel-hub.com/ogc/wms/${CONFIG_ID}`,
+  {
+    layers: "NDVI",
+    format: "image/png",
+    transparent: true,
+    tileSize: 512,
+    attribution: "Copernicus / Sentinel Hub",
+    time: "2026-02-01/2026-02-05"
+  }
+).addTo(map);
+
+// Load paddock borders
+fetch("paddocks.geojson")
+  .then(r => r.json())
+  .then(geojson => {
+    L.geoJSON(geojson, {
+      style: { color: "#ffffff", weight: 2, fillOpacity: 0 },
+      onEachFeature: function(feature, layer) {
+        layer.bindPopup(`Paddock: ${feature.properties.name}<br>NDVI: Loading...`);
+      }
+    }).addTo(map);
+  });
+
+// Load NDVI values
+fetch("paddocks_ndvi.json")
+  .then(r => r.json())
+  .then(ndviData => {
+    map.eachLayer(layer => {
+      if (layer.feature) {
+        const name = layer.feature.properties.name;
+        const ndvi = ndviData.find(d => d.paddock_name === name)?.ndvi;
+        if (ndvi !== undefined) {
+          layer.bindPopup(`Paddock: ${name}<br>NDVI: ${ndvi.toFixed(3)}`);
+        }
+      }
+    });
+  });
+</script>
+</body>
+</html>
