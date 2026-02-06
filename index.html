@@ -32,12 +32,22 @@ L.tileLayer.wms(
   }
 ).addTo(map);
 
+// Simple NDVI to color function
+function getColor(ndvi) {
+    if (ndvi === null || ndvi === undefined) return "#aaaaaa"; // gray for missing
+    return ndvi > 0.75 ? "#006400" :       // dark green
+           ndvi > 0.5  ? "#7CFC00" :       // lime green
+           ndvi > 0.25 ? "#FFD700" :       // yellow
+           ndvi >= 0   ? "#8B4513" :       // brown
+           "#aaaaaa";                       // fallback gray
+}
+
 // Load paddock borders
 fetch("paddocks.geojson")
   .then(r => r.json())
   .then(geojson => {
     const paddockLayer = L.geoJSON(geojson, {
-      style: { color: "#ffffff", weight: 2, fillOpacity: 0 },
+      style: { color: "#ffffff", weight: 2, fillOpacity: 0.5 }, // initial style
       onEachFeature: function(feature, layer) {
         layer.bindPopup(`Paddock: ${feature.properties.name}<br>NDVI: Loading...`);
       }
@@ -52,9 +62,16 @@ fetch("paddocks.geojson")
           if (layer.feature) {
             const name = layer.feature.properties.name;
             const ndvi = ndviData.find(d => d.paddock_name === name)?.ndvi;
-            if (ndvi !== undefined) {
-              layer.bindPopup(`Paddock: ${name}<br>NDVI: ${ndvi.toFixed(3)}`);
-            }
+            
+            // Update popup
+            const ndviText = ndvi !== undefined ? ndvi.toFixed(3) : "N/A";
+            layer.bindPopup(`Paddock: ${name}<br>NDVI: ${ndviText}`);
+            
+            // Update fill color
+            layer.setStyle({
+              fillColor: getColor(ndvi),
+              fillOpacity: 0.6
+            });
           }
         });
       })
