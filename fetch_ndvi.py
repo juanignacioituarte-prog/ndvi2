@@ -3,17 +3,27 @@ import json
 import csv
 import datetime
 import os
-from google.cloud import storage  # Optional GCS upload
+
+# Optional: Google Cloud Storage
+try:
+    from google.cloud import storage
+    GCS_ENABLED = True
+except ImportError:
+    GCS_ENABLED = False
 
 # -------------------------------
-# Configuration
+# Read config from environment variables
 # -------------------------------
-CONFIG_ID = "3d05a814-e5b4-458f-a661-1be8857216a5"
+CONFIG_ID = os.environ.get("SH_CONFIG_ID")
+if not CONFIG_ID:
+    raise ValueError("Environment variable SH_CONFIG_ID not set!")
+
+GCS_BUCKET = os.environ.get("GCS_BUCKET")  # optional
+
 TIME_RANGE = {
     "from": "2026-02-01T00:00:00Z",
     "to": "2026-02-05T23:59:59Z"
 }
-GCS_BUCKET = os.environ.get("GCS_BUCKET")  # Set this if you want to upload CSV/JSON
 
 # -------------------------------
 # Load paddocks
@@ -83,10 +93,12 @@ print(f"✅ NDVI CSV saved: {csv_file}")
 # Optional: Upload to GCS
 # -------------------------------
 if GCS_BUCKET:
-    client = storage.Client()
-    bucket = client.bucket(GCS_BUCKET)
-
-    for file in [json_file, csv_file]:
-        blob = bucket.blob(file)
-        blob.upload_from_filename(file)
-        print(f"✅ Uploaded {file} to GCS bucket: {GCS_BUCKET}/{file}")
+    if not GCS_ENABLED:
+        print("⚠️ google-cloud-storage not installed, skipping GCS upload")
+    else:
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        for file in [json_file, csv_file]:
+            blob = bucket.blob(file)
+            blob.upload_from_filename(file)
+            print(f"✅ Uploaded {file} to GCS bucket: {GCS_BUCKET}/{file}")
