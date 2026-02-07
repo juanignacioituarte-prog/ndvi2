@@ -1,37 +1,33 @@
-name: NDVI Fetch (Sentinel Hub)
+name: Fetch NDVI
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "0 22 * * *"   # runs daily at 22:00 UTC
-  workflow_dispatch:       # allows manual run
+    - cron: "0 10 * * *"  # daily at 10 AM UTC
 
 jobs:
   fetch-ndvi:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: 3.11
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests google-cloud-storage numpy
+        run: pip install requests shapely
 
-      # Write GCS service account JSON to a file (SAFE WAY)
-      - name: Write GCS credentials
-        run: |
-          echo '${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}' > gcs-key.json
-
-      - name: Run NDVI fetch
+      - name: Run fetch_ndvi.py
         env:
           SH_CLIENT_ID: ${{ secrets.SH_CLIENT_ID }}
           SH_CLIENT_SECRET: ${{ secrets.SH_CLIENT_SECRET }}
-          GCS_SERVICE_ACCOUNT_JSON: gcs-key.json
-        run: |
-          python fetch_ndvi.py
+        run: python fetch_ndvi.py
+
+      - name: Upload CSV to GCS
+        uses: google-github-actions/upload-cloud-storage@v1
+        with:
+          path: paddocks_ndvi.csv
+          bucket: ndvi-exports
+          credentials: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
