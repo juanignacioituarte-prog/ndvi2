@@ -21,6 +21,9 @@ START_DATE = END_DATE - timedelta(days=30)
 # -----------------------------
 # AUTH: Sentinel Hub
 # -----------------------------
+print("CLIENT ID LENGTH:", len(os.environ.get("SH_CLIENT_ID", "")))
+print("CLIENT SECRET LENGTH:", len(os.environ.get("SH_CLIENT_SECRET", "")))
+
 def get_token():
     r = requests.post(
         "https://services.sentinel-hub.com/oauth/token",
