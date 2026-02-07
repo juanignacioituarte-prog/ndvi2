@@ -1,121 +1,78 @@
-import os
-import json
-import requests
-from shapely.geometry import shape, mapping
-from datetime import datetime
-import csv
+name: Fetch NDVI
 
-# -------------------------
-# Sentinel Hub credentials
-# -------------------------
-CLIENT_ID = os.environ["SH_CLIENT_ID"]
-CLIENT_SECRET = os.environ["SH_CLIENT_SECRET"]
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 22 * * *"  # runs daily at 22:00 UTC
 
-# -------------------------
-# Config / files
-# -------------------------
-PADDOCKS_JSON_URL = "https://storage.googleapis.com/ndvi-exports/paddocks_ndvi.json"
-GCS_BUCKET_CSV = "ndvi-exports"
-CSV_FILE_NAME = "paddocks_ndvi.csv"
+jobs:
+  fetch-and-upload:
+    runs-on: ubuntu-latest
 
-# -------------------------
-# Helper: get access token
-# -------------------------
-def get_token():
-    url = "https://services.sentinel-hub.com/oauth/token"
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET
-    }
-    r = requests.post(url, data=data)
-    r.raise_for_status()
-    return r.json()["access_token"]
+    steps:
+    # -------------------------------
+    # Step 1: Checkout the repo
+    # -------------------------------
+    - name: Checkout repo
+      uses: actions/checkout@v3
 
-# -------------------------
-# Fetch paddocks geometry
-# -------------------------
-def fetch_paddocks():
-    r = requests.get(PADDOCKS_JSON_URL)
-    r.raise_for_status()
-    return r.json()
+    # -------------------------------
+    # Step 2: Setup Python
+    # -------------------------------
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
 
-# -------------------------
-# Fetch NDVI for one paddock
-# -------------------------
-def fetch_ndvi_for_paddock(paddock, token):
-    geometry = paddock.get("geometry")
-    if not geometry:
-        return None
+    # -------------------------------
+    # Step 3: Install dependencies
+    # -------------------------------
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests shapely
 
-    url = "https://services.sentinel-hub.com/api/v1/statistics"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    # -------------------------------
+    # Step 4: Set Sentinel Hub credentials
+    # -------------------------------
+    - name: Set Sentinel Hub env
+      run: |
+        echo "SH_CLIENT_ID=${{ secrets.SH_CLIENT_ID }}" >> $GITHUB_ENV
+        echo "SH_CLIENT_SECRET=${{ secrets.SH_CLIENT_SECRET }}" >> $GITHUB_ENV
 
-    payload = {
-        "input": {
-            "bounds": {
-                "geometry": geometry
-            },
-            "data": [
-                {
-                    "type": "S2L2A",
-                    "dataFilter": {
-                        "timeRange": {
-                            "from": (datetime.utcnow().date().isoformat() + "T00:00:00Z"),
-                            "to": (datetime.utcnow().date().isoformat() + "T23:59:59Z")
-                        },
-                        "maxCloudCoverage": 50
-                    }
-                }
-            ]
-        },
-        "aggregation": {
-            "evalscript": """
-            //VERSION=3
-            function setup() {
-                return {
-                    input: ["B04","B08"],
-                    output: { bands: 1, sampleType: "FLOAT32" }
-                };
-            }
-            function evaluatePixel(sample) {
-                let ndvi = (sample.B08 - sample.B04) / (sample.B08 + sample.B04);
-                return [ndvi];
-            }
-            """
-        }
-    }
+    # -------------------------------
+    # Step 5: Set GCS service account
+    # -------------------------------
+    - name: Configure GCP credentials
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
 
-    r = requests.post(url, headers=headers, json=payload)
-    r.raise_for_status()
-    data = r.json()
-    ndvi_mean = data.get("statistics", {}).get("B08_B04", {}).get("mean")
-    return ndvi_mean
+    # -------------------------------
+    # Step 6: Run fetch_ndvi.py
+    # -------------------------------
+    - name: Run NDVI fetch
+      run: |
+        python fetch_ndvi.py
 
-# -------------------------
-# Main workflow
-# -------------------------
-def main():
-    token = get_token()
-    paddocks = fetch_paddocks()
-    results = []
+    # -------------------------------
+    # Step 7: Upload CSV to GCS
+    # -------------------------------
+    - name: Upload CSV to GCS
+      uses: google-github-actions/upload-cloud-storage@v1
+      with:
+        path: ./paddocks_ndvi.csv
+        destination: paddocks_ndvi.csv
+        project_id: your-gcp-project-id
+        predefinedAcl: publicRead
 
-    for p in paddocks:
-        ndvi_val = fetch_ndvi_for_paddock(p, token)
-        results.append({
-            "paddock_name": p.get("paddock_name"),
-            "ndvi": ndvi_val,
-            "date_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        })
-
-    # Save CSV locally
-    with open(CSV_FILE_NAME, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["paddock_name","ndvi","date_utc"])
-        writer.writeheader()
-        for row in results:
-            writer.writerow(row)
-
-    print(f"✅ NDVI CSV saved: {CSV_FILE_NAME}")
-
-if __name__ == "__main__":
-    main()
+    # -------------------------------
+    # Step 8: Upload JSON to GCS
+    # -------------------------------
+    - name: Upload JSON to GCS
+      uses: google-github-actions/upload-cloud-storage@v1
+      with:
+        path: ./paddocks_ndvi.json
+        destination: paddocks_ndvi.json
+        project_id: your-gcp-project-id
+        predefinedAcl: publicRead
