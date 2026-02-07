@@ -24,13 +24,13 @@ TIME_END   = "2026-02-06T23:59:59Z"
 # --------------------------------------------
 # HELPER FUNCTIONS
 # --------------------------------------------
-def get_average_ndvi(geometry):
+def get_average_ndvi_batch(geojson_features):
     """
-    Query Sentinel Hub Process API for a given polygon geometry
-    and return average NDVI.
+    Query Sentinel Hub Process API once for all paddocks.
+    Returns dict {paddock_name: avg_ndvi}.
     """
-    geojson_geom = mapping(shape(geometry))
-    # Sentinel Hub evalscript to calculate NDVI
+    ndvi_results = {}
+
     evalscript = """
     //VERSION=3
     function setup() {
@@ -45,32 +45,47 @@ def get_average_ndvi(geometry):
       return [ndvi];
     }
     """
-    payload = {
+
+    # Create a multi-geometry request
+    data_list = [{"type": "S2L2A", "dataFilter": {"maxCloudCoverage": 50}}]
+    batch_payload = {
         "input": {
-            "bounds": {"geometry": geojson_geom},
-            "data": [{"type": "S2L2A"}]
+            "bounds": {
+                "geometry": {
+                    "type": "GeometryCollection",
+                    "geometries": [mapping(shape(f["geometry"])) for f in geojson_features]
+                }
+            },
+            "data": data_list
         },
         "output": {"width": 512, "height": 512},
         "evalscript": evalscript,
         "time": [TIME_START, TIME_END]
     }
+
     headers = {"Authorization": f"Bearer {CONFIG_ID}"}
+
     try:
-        r = requests.post(SENTINELHUB_URL, json=payload, headers=headers)
+        r = requests.post(SENTINELHUB_URL, json=batch_payload, headers=headers)
         r.raise_for_status()
-        data = r.json()
-        # Extract NDVI values from response
-        ndvi_values = []
-        for row in data.get("data", []):
-            ndvi_values.extend(row.get("values", []))
-        # Filter zeros (no data) and compute mean
-        ndvi_values = [v for v in ndvi_values if v != 0]
-        if not ndvi_values:
-            return 0.0
-        return float(np.mean(ndvi_values))
+        response = r.json()
+
+        # The response may contain a single raster for all geometries
+        ndvi_values = response.get("data", [])
+
+        # Compute average NDVI per paddock
+        for idx, feature in enumerate(geojson_features):
+            values = ndvi_values[idx]["values"] if idx < len(ndvi_values) else []
+            values = [v for v in values if v != 0]
+            avg_ndvi = float(np.mean(values)) if values else 0.0
+            ndvi_results[feature["properties"]["name"]] = avg_ndvi
+
+        return ndvi_results
+
     except Exception as e:
-        print(f"⚠️ NDVI request failed: {e}")
-        return 0.0
+        print(f"⚠️ Sentinel Hub batch request failed: {e}")
+        # fallback 0
+        return {f["properties"]["name"]: 0.0 for f in geojson_features}
 
 # --------------------------------------------
 # READ PADDOCKS
@@ -78,13 +93,16 @@ def get_average_ndvi(geometry):
 with open(PADDOCKS_GEOJSON) as f:
     paddocks_geo = json.load(f)
 
-output_data = []
+# Batch request
+ndvi_dict = get_average_ndvi_batch(paddocks_geo["features"])
 
+# Prepare output
+output_data = []
 for feature in paddocks_geo["features"]:
     paddock_name = feature["properties"].get("name")
     if not paddock_name:
         continue
-    ndvi = get_average_ndvi(feature["geometry"])
+    ndvi = ndvi_dict.get(paddock_name, 0.0)
     output_data.append({
         "paddock_name": paddock_name,
         "ndvi": ndvi,
