@@ -2,68 +2,69 @@ import json
 import os
 import requests
 from datetime import datetime, timedelta
-from google.cloud import storage
 
-SH_CLIENT_ID = os.environ["SH_CLIENT_ID"]
-SH_CLIENT_SECRET = os.environ["SH_CLIENT_SECRET"]
-GCS_KEYFILE = os.environ["GCS_SERVICE_ACCOUNT_JSON"]
-GCS_BUCKET = "ndvi-exports"
+# ========================
+# CONFIG
+# ========================
+CLIENT_ID = os.environ["SENTINELHUB_CLIENT_ID"]
+CLIENT_SECRET = os.environ["SENTINELHUB_CLIENT_SECRET"]
 
-PADDocks_FILE = "paddocks.geojson"
-OUTPUT_FILE = "paddocks_ndvi.json"
+PADOCKS_FILE = "paddocks.json"
+OUTPUT_JSON = "paddocks_ndvi.json"
+OUTPUT_CSV = "paddocks_ndvi.csv"
 
-END_DATE = datetime.utcnow().date()
-START_DATE = END_DATE - timedelta(days=30)
+TIME_FROM = (datetime.utcnow() - timedelta(days=10)).strftime("%Y-%m-%d")
+TIME_TO = datetime.utcnow().strftime("%Y-%m-%d")
 
-# -----------------------------
+STATS_URL = "https://services.sentinel-hub.com/api/v1/statistics"
+TOKEN_URL = "https://services.sentinel-hub.com/oauth/token"
+
+# ========================
 # AUTH
-# -----------------------------
+# ========================
 def get_token():
     r = requests.post(
-        "https://services.sentinel-hub.com/oauth/token",
+        TOKEN_URL,
         data={
             "grant_type": "client_credentials",
-            "client_id": SH_CLIENT_ID,
-            "client_secret": SH_CLIENT_SECRET,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
         },
     )
     r.raise_for_status()
     return r.json()["access_token"]
 
 TOKEN = get_token()
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Content-Type": "application/json",
+}
 
-# -----------------------------
+# ========================
 # LOAD PADDOCKS
-# -----------------------------
-with open(PADDocks_FILE) as f:
-    geojson = json.load(f)
+# ========================
+with open(PADOCKS_FILE) as f:
+    paddocks = json.load(f)["features"]
 
-features = geojson["features"]
+results = []
 
-# -----------------------------
-# NDVI FETCH
-# -----------------------------
-def fetch_ndvi(geometry):
+# ========================
+# LOOP PADDOCKS
+# ========================
+for feature in paddocks:
+    name = feature["properties"].get("name")
+    geometry = feature["geometry"]
+
     payload = {
         "input": {
             "bounds": {
-                "geometry": {
-                    "type": "Feature",
-                    "geometry": geometry
-                }
+                "geometry": geometry
             },
-            "data": [
-                {
-                    "type": "sentinel-2-l2a",
-                    "dataFilter": {
-                        "timeRange": {
-                            "from": f"{START_DATE}T00:00:00Z",
-                            "to": f"{END_DATE}T23:59:59Z",
-                        },
-                        "maxCloudCoverage": 40,
+            "data": [{
+                "type": "sentinel-2-l2a",
+                "dataFilter": {
+                    "timeRange": {
+                        "from": f"{TIME_FROM}T00:00:00Z",
+                        "to": f"{TIME_TO}T23:59:59Z"
                     },
-                }
-            ],
-        },
-        "aggregation": {
-            "timeRange": {
+                    "maxCloudCoverage": 80
