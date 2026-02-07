@@ -1,64 +1,55 @@
-import json
 import os
+import json
 import requests
-from datetime import datetime, timedelta
+from shapely.geometry import shape, mapping
+from datetime import datetime
+import csv
 
-# =========================
-# CONFIG
-# =========================
+# -------------------------
+# Sentinel Hub credentials
+# -------------------------
+CLIENT_ID = os.environ["SH_CLIENT_ID"]
+CLIENT_SECRET = os.environ["SH_CLIENT_SECRET"]
 
-CLIENT_ID = os.environ["SENTINELHUB_CLIENT_ID"]
-CLIENT_SECRET = os.environ["SENTINELHUB_CLIENT_SECRET"]
+# -------------------------
+# Config / files
+# -------------------------
+PADDOCKS_JSON_URL = "https://storage.googleapis.com/ndvi-exports/paddocks_ndvi.json"
+GCS_BUCKET_CSV = "ndvi-exports"
+CSV_FILE_NAME = "paddocks_ndvi.csv"
 
-PADDocks_FILE = "paddocks.json"
-OUTPUT_FILE = "paddocks_ndvi.json"
-
-TIME_TO = datetime.utcnow().date()
-TIME_FROM = TIME_TO - timedelta(days=10)
-
-STATS_URL = "https://services.sentinel-hub.com/api/v1/statistics"
-TOKEN_URL = "https://services.sentinel-hub.com/oauth/token"
-
-# =========================
-# AUTH
-# =========================
-
+# -------------------------
+# Helper: get access token
+# -------------------------
 def get_token():
-    r = requests.post(
-        TOKEN_URL,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        data={
-            "grant_type": "client_credentials",
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-        },
-    )
+    url = "https://services.sentinel-hub.com/oauth/token"
+    data = {
+        "grant_type": "client_credentials",
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET
+    }
+    r = requests.post(url, data=data)
     r.raise_for_status()
     return r.json()["access_token"]
 
-TOKEN = get_token()
+# -------------------------
+# Fetch paddocks geometry
+# -------------------------
+def fetch_paddocks():
+    r = requests.get(PADDOCKS_JSON_URL)
+    r.raise_for_status()
+    return r.json()
 
-HEADERS = {
-    "Authorization": f"Bearer {TOKEN}",
-    "Content-Type": "application/json",
-}
+# -------------------------
+# Fetch NDVI for one paddock
+# -------------------------
+def fetch_ndvi_for_paddock(paddock, token):
+    geometry = paddock.get("geometry")
+    if not geometry:
+        return None
 
-# =========================
-# LOAD PADDOCKS
-# =========================
-
-with open(PADDocks_FILE, "r") as f:
-    paddocks = json.load(f)
-
-results = []
-
-# =========================
-# LOOP PADDOCKS
-# =========================
-
-for feature in paddocks["features"]:
-    name = feature.get("properties", {}).get("name")
-    geometry = feature["geometry"]
+    url = "https://services.sentinel-hub.com/api/v1/statistics"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     payload = {
         "input": {
@@ -67,70 +58,64 @@ for feature in paddocks["features"]:
             },
             "data": [
                 {
-                    "type": "sentinel-2-l2a",
+                    "type": "S2L2A",
                     "dataFilter": {
                         "timeRange": {
-                            "from": f"{TIME_FROM}T00:00:00Z",
-                            "to": f"{TIME_TO}T23:59:59Z",
+                            "from": (datetime.utcnow().date().isoformat() + "T00:00:00Z"),
+                            "to": (datetime.utcnow().date().isoformat() + "T23:59:59Z")
                         },
-                        "maxCloudCoverage": 80,
-                    },
+                        "maxCloudCoverage": 50
+                    }
                 }
-            ],
+            ]
         },
         "aggregation": {
-            "timeRange": {
-                "from": f"{TIME_FROM}T00:00:00Z",
-                "to": f"{TIME_TO}T23:59:59Z",
-            },
-            "aggregationInterval": {"of": "P1D"},
-            "resx": 10,
-            "resy": 10,
-        },
-        "evalscript": """
-//VERSION=3
-function setup() {
-  return {
-    input: ["B04", "B08"],
-    output: [{ id: "ndvi", bands: 1 }]
-  };
-}
-
-function evaluatePixel(s) {
-  let ndvi = (s.B08 - s.B04) / (s.B08 + s.B04);
-  return [ndvi];
-}
-""",
+            "evalscript": """
+            //VERSION=3
+            function setup() {
+                return {
+                    input: ["B04","B08"],
+                    output: { bands: 1, sampleType: "FLOAT32" }
+                };
+            }
+            function evaluatePixel(sample) {
+                let ndvi = (sample.B08 - sample.B04) / (sample.B08 + sample.B04);
+                return [ndvi];
+            }
+            """
+        }
     }
 
-    r = requests.post(STATS_URL, headers=HEADERS, json=payload)
+    r = requests.post(url, headers=headers, json=payload)
+    r.raise_for_status()
+    data = r.json()
+    ndvi_mean = data.get("statistics", {}).get("B08_B04", {}).get("mean")
+    return ndvi_mean
 
-    if r.status_code != 200:
-        print(f"⚠️ Failed for {name}: {r.text}")
-        ndvi_value = None
-    else:
-        data = r.json()
-        try:
-            intervals = data["data"]
-            values = [
-                d["outputs"]["ndvi"]["stats"]["mean"]
-                for d in intervals
-                if d["outputs"]["ndvi"]["stats"]["mean"] is not None
-            ]
-            ndvi_value = round(sum(values) / len(values), 3) if values else None
-        except Exception:
-            ndvi_value = None
+# -------------------------
+# Main workflow
+# -------------------------
+def main():
+    token = get_token()
+    paddocks = fetch_paddocks()
+    results = []
 
-    results.append(
-        {
-            "paddock_name": name,
-            "ndvi": ndvi_value,
-            "date_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-    )
+    for p in paddocks:
+        ndvi_val = fetch_ndvi_for_paddock(p, token)
+        results.append({
+            "paddock_name": p.get("paddock_name"),
+            "ndvi": ndvi_val,
+            "date_utc": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        })
 
-# =========================
-# SAVE OUTPUT
-# =========================
+    # Save CSV locally
+    with open(CSV_FILE_NAME, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["paddock_name","ndvi","date_utc"])
+        writer.writeheader()
+        for row in results:
+            writer.writerow(row)
 
-wi
+    print(f"✅ NDVI CSV saved: {CSV_FILE_NAME}")
+
+if __name__ == "__main__":
+    main()
