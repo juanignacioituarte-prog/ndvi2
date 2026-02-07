@@ -5,78 +5,82 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-  <style>#map { height: 100vh; }</style>
+  <style>
+    #map { height: 100vh; }
+    .legend { background: white; padding: 10px; line-height: 1.5em; }
+    .legend-color { display:inline-block; width:20px; height:20px; margin-right:5px; }
+  </style>
 </head>
 <body>
 <div id="map"></div>
 
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script>
-const CONFIG_ID = "3d05a814-e5b4-458f-a661-1be8857216a5";  // Sentinel Hub config ID
-const GCS_BUCKET = "ndvi-exports";                          // Your GCS bucket
-const NDVI_JSON_FILE = "paddocks_ndvi.json";               // File in bucket
+const GCS_BUCKET = "ndvi-exports";                  // Your GCS bucket
+const NDVI_JSON_FILE = "paddocks_ndvi.json";        // NDVI JSON file name
 
-// Initialize map
+// Initialize map (adjust coordinates/zoom for your farm)
 const map = L.map('map').setView([-41.225, 174.825], 14);
 
-// Add Sentinel Hub NDVI WMS tiles
-L.tileLayer.wms(
-  `https://services.sentinel-hub.com/ogc/wms/${CONFIG_ID}`,
-  {
-    layers: "NDVI",
-    format: "image/png",
-    transparent: true,
-    tileSize: 512,
-    attribution: "Copernicus / Sentinel Hub",
-    time: "2026-02-01/2026-02-05"
-  }
-).addTo(map);
-
-// Simple NDVI to color function
+// NDVI color function
 function getColor(ndvi) {
-    if (ndvi === null || ndvi === undefined) return "#aaaaaa"; // gray for missing
-    return ndvi > 0.75 ? "#006400" :       // dark green
-           ndvi > 0.5  ? "#7CFC00" :       // lime green
-           ndvi > 0.25 ? "#FFD700" :       // yellow
-           ndvi >= 0   ? "#8B4513" :       // brown
-           "#aaaaaa";                       // fallback gray
+    if (ndvi === null || ndvi === undefined) return "#aaaaaa"; // missing
+    return ndvi > 0.75 ? "#006400" :
+           ndvi > 0.5  ? "#7CFC00" :
+           ndvi > 0.25 ? "#FFD700" :
+           ndvi >= 0   ? "#8B4513" :
+           "#aaaaaa";
 }
 
-// Load paddock borders
+// Load paddocks
 fetch("paddocks.geojson")
   .then(r => r.json())
   .then(geojson => {
     const paddockLayer = L.geoJSON(geojson, {
-      style: { color: "#ffffff", weight: 2, fillOpacity: 0.5 }, // initial style
+      style: { color: "#000000", weight: 2, fillOpacity: 0.5 },
       onEachFeature: function(feature, layer) {
         layer.bindPopup(`Paddock: ${feature.properties.name}<br>NDVI: Loading...`);
       }
     }).addTo(map);
 
-    // Load NDVI values from GCS
+    // Load NDVI values from GCS JSON
     const ndviUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${NDVI_JSON_FILE}`;
     fetch(ndviUrl)
       .then(r => r.json())
       .then(ndviData => {
         paddockLayer.eachLayer(layer => {
-          if (layer.feature) {
-            const name = layer.feature.properties.name;
-            const ndvi = ndviData.find(d => d.paddock_name === name)?.ndvi;
-            
-            // Update popup
-            const ndviText = ndvi !== undefined ? ndvi.toFixed(3) : "N/A";
-            layer.bindPopup(`Paddock: ${name}<br>NDVI: ${ndviText}`);
-            
-            // Update fill color
-            layer.setStyle({
-              fillColor: getColor(ndvi),
-              fillOpacity: 0.6
-            });
-          }
+          const name = layer.feature.properties.name;
+          const ndvi = ndviData.find(d => d.paddock_name === name)?.ndvi;
+
+          // Update fill color
+          layer.setStyle({ fillColor: getColor(ndvi), fillOpacity: 0.6 });
+
+          // Update popup
+          const ndviText = ndvi !== undefined ? ndvi.toFixed(3) : "N/A";
+          layer.bindPopup(`Paddock: ${name}<br>NDVI: ${ndviText}`);
         });
       })
-      .catch(err => console.error("Failed to load NDVI JSON from GCS:", err));
+      .catch(err => console.error("Failed to load NDVI JSON:", err));
   });
+
+// ------------------
+// Legend
+// ------------------
+const legend = L.control({position: 'bottomright'});
+legend.onAdd = function(map) {
+    const div = L.DomUtil.create('div', 'legend');
+    const grades = [0, 0.25, 0.5, 0.75];
+    const labels = ["0–0.25","0.25–0.5","0.5–0.75","0.75–1"];
+    const colors = ["#8B4513","#FFD700","#7CFC00","#006400"];
+
+    div.innerHTML = "<b>NDVI</b><br>";
+    for(let i=0;i<grades.length;i++){
+        div.innerHTML += `<span class="legend-color" style="background:${colors[i]}"></span> ${labels[i]}<br>`;
+    }
+    return div;
+};
+legend.addTo(map);
+
 </script>
 </body>
 </html>
