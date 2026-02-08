@@ -1,48 +1,32 @@
-name: Fetch NDVI
+name: Daily NDVI Sync
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 8 * * *' # runs daily at 08:00 UTC, adjust if needed
+    - cron: '0 19 * * *'
 
 jobs:
-  fetch-ndvi:
+  run-sync:
     runs-on: ubuntu-latest
-    env:
-      SH_CLIENT_ID: ${{ secrets.SH_CLIENT_ID }}
-      SH_CLIENT_SECRET: ${{ secrets.SH_CLIENT_SECRET }}
-
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
-
+          python-version: '3.9'
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-
-      - name: Run NDVI fetch script
+        run: pip install requests pandas
+      - name: Run Fetch
+        env:
+          SH_CLIENT_ID: ${{ secrets.SH_CLIENT_ID }}
+          SH_CLIENT_SECRET: ${{ secrets.SH_CLIENT_SECRET }}
         run: python fetch_ndvi.py
-
-      - name: Upload JSON to GCS
-        uses: google-github-actions/upload-cloud-storage@v1
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          destination: "ndvi-exports/paddocks_ndvi.json"
-          path: paddocks_ndvi.json
-          resumable: false
-          gzip: false
-
-      - name: Upload CSV to GCS
-        uses: google-github-actions/upload-cloud-storage@v1
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          destination: "ndvi-exports/paddocks_ndvi.csv"
-          path: paddocks_ndvi.csv
-          resumable: false
-          gzip: false
+      - name: Commit CSV
+        run: |
+          git config --global user.name "FarmBot"
+          git config --global user.email "bot@farm.com"
+          git add paddocks_ndvi.csv
+          git commit -m "Update NDVI data" || exit 0
+          git push
