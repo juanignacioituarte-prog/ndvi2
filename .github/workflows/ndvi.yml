@@ -3,30 +3,37 @@ name: Daily NDVI Sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 19 * * *'
+    - cron: '0 19 * * *' # Runs daily at 7 AM NZ Time
 
 jobs:
   run-sync:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Allows the bot to push the CSV back to your repo
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-      - name: Install dependencies
-        run: pip install requests pandas
-      - name: Run Fetch
+
+      - name: Install Dependencies
+        run: |
+          pip install requests pandas fsspec
+
+      - name: Run NDVI Fetch
         env:
           SH_CLIENT_ID: ${{ secrets.SH_CLIENT_ID }}
           SH_CLIENT_SECRET: ${{ secrets.SH_CLIENT_SECRET }}
         run: python fetch_ndvi.py
-      - name: Commit CSV
+
+      - name: Commit and Push CSV
         run: |
           git config --global user.name "FarmBot"
           git config --global user.email "bot@farm.com"
           git add paddocks_ndvi.csv
-          git commit -m "Update NDVI data" || exit 0
+          # The || exit 0 prevents the workflow from failing if there are no data changes
+          git commit -m "Update NDVI data: $(date -u +'%Y-%m-%d')" || exit 0
           git push
