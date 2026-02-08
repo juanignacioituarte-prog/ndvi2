@@ -6,15 +6,19 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 # 1. SETTINGS
-CLIENT_ID = os.environ["SH_CLIENT_ID"]
-CLIENT_SECRET = os.environ["SH_CLIENT_SECRET"]
+CLIENT_ID = os.environ.get("SH_CLIENT_ID")
+CLIENT_SECRET = os.environ.get("SH_CLIENT_SECRET")
 PADDOCKS_URL = "https://storage.googleapis.com/ndvi-exports/paddocks.geojson"
 OUTPUT_CSV = "paddocks_ndvi.csv"
 
 # 2. AUTHENTICATION
 def get_token():
     url = "https://services.sentinel-hub.com/oauth/token"
-    data = {"grant_type": "client_credentials", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET}
+    data = {
+        "grant_type": "client_credentials", 
+        "client_id": CLIENT_ID, 
+        "client_secret": CLIENT_SECRET
+    }
     r = requests.post(url, data=data)
     r.raise_for_status()
     return r.json()["access_token"]
@@ -25,17 +29,18 @@ def fetch_paddock_geometries():
     r.raise_for_status()
     return r.json()["features"]
 
-# 4. FETCH NDVI DATA
+# 4. FETCH NDVI DATA WITH < 40% CLOUD CHECK
 def get_paddock_ndvi(token, geometry):
     url = "https://services.sentinel-hub.com/api/v1/statistics"
-    
-    # Requesting NDVI statistics for the last 15 days
     now = datetime.utcnow()
-    start = now - timedelta(days=15)
+    # Looking back 30 days to find a clear image
+    start = now - timedelta(days=30)
     
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {token}", 
+        "Content-Type": "application/json"
+    }
     
-    # Evalscript to calculate NDVI
     evalscript = """
     //VERSION=3
     function setup() {
@@ -49,10 +54,12 @@ def get_paddock_ndvi(token, geometry):
     }
     function evaluatePixel(samples) {
       let ndvi = (samples.B08 - samples.B04) / (samples.B08 + samples.B04);
-      // Mask out clouds (SCL 3, 8, 9, 10)
-      let mask = 1;
-      if ([3, 8, 9, 10].includes(samples.SCL)) { mask = 0; }
-      return { stats: [ndvi], dataMask: [mask] };
+      // SCL bands 3, 8, 9, 10 are clouds or shadows
+      let isCloud = [3, 8, 9, 10].includes(samples.SCL);
+      return { 
+        stats: [ndvi], 
+        dataMask: [isCloud ? 0 : 1] 
+      };
     }
     """
 
@@ -74,17 +81,38 @@ def get_paddock_ndvi(token, geometry):
 
     r = requests.post(url, headers=headers, json=body)
     if r.status_code != 200:
-        return None
+        return None, None
 
-    # Get the most recent valid (non-cloudy) result
-    stats = r.json().get("data", [])
-    for entry in reversed(stats): # Work backwards from today
-        val = entry.get("outputs", {}).get("stats", {}).get("bands", [{}])[0].get("stats", {}).get("mean")
-        if val is not None:
-            return round(val, 3)
-    return None
+    stats_data = r.json().get("data", [])
+    
+    # Check images starting from the most recent
+    for entry in reversed(stats_data):
+        outputs = entry.get("outputs", {})
+        
+        # Calculate cloud percentage based on dataMask
+        mask_stats = outputs.get("dataMask", {}).get("bands", [{}])[0].get("stats", {})
+        sample_count = mask_stats.get("sampleCount", 0)
+        no_data_count = mask_stats.get("noDataCount", 0)
+        
+        if sample_count > 0:
+            cloud_pc = (no_data_count / sample_count) * 100
+            
+            # Enforce 40% cloud threshold
+            if cloud_pc < 40:
+                bands = outputs.get("stats", {}).get("bands", [])
+                if bands and len(bands) > 0:
+                    val = bands[0].get("stats", {}).get("mean")
+                    date_found = entry.get("interval", {}).get("from", "")[:10]
+                    if val is not None:
+                        return round(val, 3), date_found
+                        
+    return None, None
 
 def main():
+    if not CLIENT_ID or not CLIENT_SECRET:
+        print("Error: SH_CLIENT_ID or SH_CLIENT_SECRET not set.")
+        return
+
     token = get_token()
     features = fetch_paddock_geometries()
     results = []
@@ -92,22 +120,25 @@ def main():
     print(f"Processing {len(features)} paddocks...")
     
     for feat in features:
-        name = feat["properties"].get("name") or feat["properties"].get("paddock_name")
+        # Check for 'name' or 'paddock_name' in geojson properties
+        props = feat.get("properties", {})
+        name = props.get("name") or props.get("paddock_name") or "Unknown"
         geometry = feat["geometry"]
         
         print(f"Fetching NDVI for {name}...")
-        ndvi_val = get_paddock_ndvi(token, geometry)
+        ndvi_val, date_obs = get_paddock_ndvi(token, geometry)
         
         results.append({
             "paddock_name": name,
             "ndvi": ndvi_val,
-            "date_utc": datetime.utcnow().strftime("%Y-%m-%d")
+            "observation_date": date_obs,
+            "processed_at": datetime.utcnow().strftime("%Y-%m-%d")
         })
 
     # Save to CSV
     df = pd.DataFrame(results)
     df.to_csv(OUTPUT_CSV, index=False)
-    print(f"Done! Saved to {OUTPUT_CSV}")
+    print(f"Done! Saved {len(results)} rows to {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()
